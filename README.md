@@ -1,4 +1,4 @@
-Very simple, work in progress input driver for the SPI keyboard / trackpad found on 12" MacBooks. 
+Very simple, work in progress input driver for the SPI keyboard / trackpad found on 12" MacBooks, as well a simple touchbar driver for 2016 MacBook Pro's.
 
 Using it:
 ---------
@@ -35,6 +35,10 @@ Interrupts are now working! This means that the driver is no longer polled, and 
 Touchpad:
 ---------
 The touchpad protocol is the same as the bcm5974 driver. Perhaps there is a nice way of utilizing it? For now, bits of code have just been copy and pasted.
+
+Touchbar:
+---------
+The touchbar driver is called `appletb`. It provides basic functionality, enabling the touchbar and switching between modes based on the FN key. Furthermore the touchbar is automatically switched off if no (internal) keyboard, touchpad, or touchbar input is received for 60 seconds; any (internal) keyboard or touchpad input switches it back on.
 
 Some useful threads:
 --------------------
