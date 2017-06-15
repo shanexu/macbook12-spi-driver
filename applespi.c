@@ -32,6 +32,9 @@
 #include <linux/workqueue.h>
 #include <linux/notifier.h>
 #include <linux/leds.h>
+#ifdef DEBUG_TOUCHPAD_DIMENSIONS
+#include <linux/ktime.h>
+#endif
 
 #include <linux/input.h>
 #include <linux/input/mt.h>
@@ -760,6 +763,11 @@ static int report_tp_state(struct applespi_data *applespi, struct touchpad_proto
 	struct input_dev *input = applespi->touchpad_input_dev;
 	const struct applespi_tp_info *tp_info = applespi->tp_info;
 	int i, n;
+#ifdef DEBUG_TOUCHPAD_DIMENSIONS
+	static int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+	static bool dim_updated = false;
+	static ktime_t last_print = 0;
+#endif
 
 	n = 0;
 
@@ -770,7 +778,28 @@ static int report_tp_state(struct applespi_data *applespi, struct touchpad_proto
 		applespi->pos[n].x = raw2int(f->abs_x);
 		applespi->pos[n].y = tp_info->y_min + tp_info->y_max - raw2int(f->abs_y);
 		n++;
+
+#ifdef DEBUG_TOUCHPAD_DIMENSIONS
+#define UPD_DIM(val, op, last) \
+		if (raw2int(val) op last) { \
+			last = raw2int(val); \
+			dim_updated = true; \
+		}
+		UPD_DIM(f->abs_x, <, min_x)
+		UPD_DIM(f->abs_x, >, max_x)
+		UPD_DIM(f->abs_y, <, min_y)
+		UPD_DIM(f->abs_y, >, max_y)
+#endif
 	}
+
+#ifdef DEBUG_TOUCHPAD_DIMENSIONS
+	if (dim_updated && ktime_ms_delta(ktime_get(), last_print) > 1000) {
+	    pr_info("New touchpad dimensions: %d %d %d %d\n", min_x, max_x,
+		    min_y, max_y);
+	    dim_updated = false;
+	    last_print = ktime_get();
+	}
+#endif
 
 	input_mt_assign_slots(input, applespi->slots, applespi->pos, n, 0);
 
