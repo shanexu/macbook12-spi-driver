@@ -1,5 +1,6 @@
 obj-m += applespi.o
 obj-m += appletb.o
+obj-m += debug_acpi.o
 
 KVERSION := $(KERNELRELEASE)
 ifeq ($(origin KERNELRELEASE), undefined)
@@ -21,3 +22,9 @@ test: all
 	sync
 	-rmmod applespi
 	insmod ./applespi.ko
+
+debug: all
+	sudo insmod ./debug_acpi.ko
+	sudo rmmod debug_acpi
+	dmesg | grep debug_acpi > debug.out
+	@echo "output in debug.out"
