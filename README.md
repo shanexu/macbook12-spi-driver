@@ -53,6 +53,15 @@ The touchbar driver is called `appletb`. It provides basic functionality, enabli
 
 The timeouts till the touchbar is dimmed and turned off can be changed via the `idle_timeout` and `dim_timeout` module params or sysfs attributes (`/sys/class/input/input9/device/...`); they default to 3min and 2.5min, respectively. See also `modinfo appletb`.
 
+Debugging:
+----------
+The `debug` module parameter can be used to turn debugging output on (and off) dynamically, and can be set in all the usual ways (e.g. via kernel command-line (`applespi.debug=0x1`), via sysfs (`echo 0x10000 | sudo tee /sys/module/applespi/parameters/debug`), etc.).
+
+Some useful values are (since the value is a bitmask, these can be combined):
+* 0x10000 - determine touchpad values range
+* 0x1     - turn on logging of touchpad initialization packets
+* 0x6     - turn on logging of backlight and caps-lock-led packets
+
 Some useful threads:
 --------------------
 * https://bugzilla.kernel.org/show_bug.cgi?id=108331
