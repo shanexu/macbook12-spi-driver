@@ -117,7 +117,8 @@
 	do { \
 		if (debug & (mask)) \
 			dev_print_hex_dump(KERN_DEBUG, &(applespi)->spi->dev, \
-					   fmt, 32, 1, buf, len, false); \
+					   fmt, DUMP_PREFIX_NONE, 32, 1, buf, \
+					   len, false); \
 	} while (0)
 
 #define APPLE_FLAG_FKEY		0x01
@@ -549,32 +550,6 @@ static const struct applespi_tp_model_info applespi_tp_models[] = {
 	},
 	{}
 };
-
-/**
- * This is a reduced version of print_hex_dump() that uses dev_printk().
- */
-static void dev_print_hex_dump(const char *level, const struct device *dev,
-			       const char *prefix_str,
-			       int rowsize, int groupsize,
-			       const void *buf, size_t len, bool ascii)
-{
-	const u8 *ptr = buf;
-	int i, linelen, remaining = len;
-	unsigned char linebuf[32 * 3 + 2 + 32 + 1];
-
-	if (rowsize != 16 && rowsize != 32)
-		rowsize = 16;
-
-	for (i = 0; i < len; i += rowsize) {
-		linelen = min(remaining, rowsize);
-		remaining -= rowsize;
-
-		hex_dump_to_buffer(ptr + i, linelen, rowsize, groupsize,
-				   linebuf, sizeof(linebuf), ascii);
-
-		dev_printk(level, dev, "%s%s\n", prefix_str, linebuf);
-	}
-}
 
 static const char *applespi_debug_facility(unsigned int log_mask)
 {
