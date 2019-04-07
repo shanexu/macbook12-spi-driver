@@ -1,5 +1,7 @@
 obj-m += applespi.o
 
+CFLAGS_applespi.o = -I$(src)	# for tracing
+
 KVERSION := $(KERNELRELEASE)
 ifeq ($(origin KERNELRELEASE), undefined)
 KVERSION := $(shell uname -r)
