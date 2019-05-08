@@ -35,7 +35,6 @@
 #include <linux/iio/triggered_buffer.h>
 #include <linux/iio/trigger.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
 #include <linux/slab.h>
 
 #include "apple-ibridge.h"
@@ -44,13 +43,10 @@
 #define APPLEALS_DEF_CHANGE_SENS	APPLEALS_DYN_SENS
 
 struct appleals_device {
-	struct appleib_device	*ib_dev;
-	struct device		*log_dev;
 	struct hid_device	*hid_dev;
 	struct hid_report	*cfg_report;
 	struct hid_field	*illum_field;
 	struct iio_dev		*iio_dev;
-	struct iio_trigger	*iio_trig;
 	int			cur_sensitivity;
 	int			cur_hysteresis;
 	bool			events_enabled;
@@ -144,8 +140,13 @@ static int appleals_get_field_value_for_usage(struct hid_field *field,
 static __s32 appleals_get_field_value(struct appleals_device *als_dev,
 				      struct hid_field *field)
 {
+	bool powered_on = !hid_hw_power(als_dev->hid_dev, PM_HINT_FULLON);
+
 	hid_hw_request(als_dev->hid_dev, field->report, HID_REQ_GET_REPORT);
 	hid_hw_wait(als_dev->hid_dev);
+
+	if (powered_on)
+		hid_hw_power(als_dev->hid_dev, PM_HINT_NORMAL);
 
 	return field->value[0];
 }
@@ -235,9 +236,7 @@ static void appleals_push_new_value(struct appleals_device *als_dev,
 static int appleals_hid_event(struct hid_device *hdev, struct hid_field *field,
 			      struct hid_usage *usage, __s32 value)
 {
-	struct appleals_device *als_dev =
-		appleib_get_drvdata(hid_get_drvdata(hdev),
-				    &appleals_hid_driver);
+	struct appleals_device *als_dev = hid_get_drvdata(hdev);
 	int rc = 0;
 
 	if ((usage->hid & HID_USAGE_PAGE) != HID_UP_SENSOR)
@@ -405,14 +404,14 @@ static void appleals_config_sensor(struct appleals_device *als_dev,
 				   bool events_enabled, int sensitivity)
 {
 	struct hid_field *field;
+	bool powered_on;
 	__s32 val;
 
-	/*
-	 * We're (often) in a probe here, so need to enable input processing
-	 * in that case, but only in that case.
-	 */
-	if (appleib_needs_io_start(als_dev->ib_dev, als_dev->hid_dev))
-		hid_device_io_start(als_dev->hid_dev);
+	powered_on = !hid_hw_power(als_dev->hid_dev, PM_HINT_FULLON);
+
+	hid_hw_request(als_dev->hid_dev, als_dev->cfg_report,
+		       HID_REQ_GET_REPORT);
+	hid_hw_wait(als_dev->hid_dev);
 
 	field = appleib_find_report_field(als_dev->cfg_report,
 					  HID_USAGE_SENSOR_PROY_POWER_STATE);
@@ -449,8 +448,8 @@ static void appleals_config_sensor(struct appleals_device *als_dev,
 	hid_hw_request(als_dev->hid_dev, als_dev->cfg_report,
 		       HID_REQ_SET_REPORT);
 
-	if (appleib_needs_io_start(als_dev->ib_dev, als_dev->hid_dev))
-		hid_device_io_stop(als_dev->hid_dev);
+	if (powered_on)
+		hid_hw_power(als_dev->hid_dev, PM_HINT_NORMAL);
 }
 
 static int appleals_config_iio(struct appleals_device *als_dev)
@@ -458,9 +457,10 @@ static int appleals_config_iio(struct appleals_device *als_dev)
 	struct iio_dev *iio_dev;
 	struct iio_trigger *iio_trig;
 	struct appleals_device **priv;
+	struct device *parent = &als_dev->hid_dev->dev;
 	int rc;
 
-	iio_dev = iio_device_alloc(sizeof(als_dev));
+	iio_dev = devm_iio_device_alloc(parent, sizeof(als_dev));
 	if (!iio_dev)
 		return -ENOMEM;
 
@@ -469,73 +469,64 @@ static int appleals_config_iio(struct appleals_device *als_dev)
 
 	iio_dev->channels = appleals_channels;
 	iio_dev->num_channels = ARRAY_SIZE(appleals_channels);
-	iio_dev->dev.parent = &als_dev->hid_dev->dev;
+	iio_dev->dev.parent = parent;
 	iio_dev->info = &appleals_info;
 	iio_dev->name = "als";
 	iio_dev->modes = INDIO_DIRECT_MODE;
 
-	rc = iio_triggered_buffer_setup(iio_dev, &iio_pollfunc_store_time, NULL,
-					NULL);
+	rc = devm_iio_triggered_buffer_setup(parent, iio_dev,
+					     &iio_pollfunc_store_time, NULL,
+					     NULL);
 	if (rc) {
-		dev_err(als_dev->log_dev,
+		hid_err(als_dev->hid_dev,
 			"Failed to set up iio triggered buffer: %d\n", rc);
-		goto free_iio_dev;
+		return rc;
 	}
 
-	iio_trig = iio_trigger_alloc("%s-dev%d", iio_dev->name, iio_dev->id);
-	if (!iio_trig) {
-		rc = -ENOMEM;
-		goto clean_trig_buf;
-	}
+	iio_trig = devm_iio_trigger_alloc(parent, "%s-dev%d", iio_dev->name,
+					  iio_dev->id);
+	if (!iio_trig)
+		return -ENOMEM;
 
-	iio_trig->dev.parent = &als_dev->hid_dev->dev;
+	iio_trig->dev.parent = parent;
 	iio_trig->ops = &appleals_trigger_ops;
 	iio_trigger_set_drvdata(iio_trig, als_dev);
 
-	rc = iio_trigger_register(iio_trig);
+	rc = devm_iio_trigger_register(parent, iio_trig);
 	if (rc) {
-		dev_err(als_dev->log_dev,
+		hid_err(als_dev->hid_dev,
 			"Failed to register iio trigger: %d\n",
 			rc);
-		goto free_iio_trig;
+		return rc;
 	}
 
-	als_dev->iio_trig = iio_trig;
-
-	rc = iio_device_register(iio_dev);
+	rc = devm_iio_device_register(parent, iio_dev);
 	if (rc) {
-		dev_err(als_dev->log_dev, "Failed to register iio device: %d\n",
+		hid_err(als_dev->hid_dev, "Failed to register iio device: %d\n",
 			rc);
-		goto unreg_iio_trig;
+		return rc;
 	}
 
 	als_dev->iio_dev = iio_dev;
 
 	return 0;
-
-unreg_iio_trig:
-	iio_trigger_unregister(iio_trig);
-free_iio_trig:
-	iio_trigger_free(iio_trig);
-	als_dev->iio_trig = NULL;
-clean_trig_buf:
-	iio_triggered_buffer_cleanup(iio_dev);
-free_iio_dev:
-	iio_device_free(iio_dev);
-
-	return rc;
 }
 
 static int appleals_probe(struct hid_device *hdev,
 			  const struct hid_device_id *id)
 {
-	struct appleals_device *als_dev =
-		appleib_get_drvdata(hid_get_drvdata(hdev),
-				    &appleals_hid_driver);
+	struct appleals_device *als_dev;
 	struct hid_field *state_field;
 	struct hid_field *illum_field;
+	int rc;
 
 	/* find als fields and reports */
+	rc = hid_parse(hdev);
+	if (rc) {
+		hid_err(hdev, "als: hid parse failed (%d)\n", rc);
+		return rc;
+	}
+
 	state_field = appleib_find_hid_field(hdev, HID_USAGE_SENSOR_ALS,
 					    HID_USAGE_SENSOR_PROP_REPORT_STATE);
 	illum_field = appleib_find_hid_field(hdev, HID_USAGE_SENSOR_ALS,
@@ -543,129 +534,74 @@ static int appleals_probe(struct hid_device *hdev,
 	if (!state_field || !illum_field)
 		return -ENODEV;
 
-	if (als_dev->hid_dev) {
-		dev_warn(als_dev->log_dev,
-			 "Found duplicate ambient light sensor - ignoring\n");
-		return -EBUSY;
-	}
-
-	dev_dbg(als_dev->log_dev, "Found ambient light sensor\n");
+	hid_dbg(hdev, "Found ambient light sensor\n");
 
 	/* initialize device */
+	als_dev = devm_kzalloc(&hdev->dev, sizeof(*als_dev), GFP_KERNEL);
+	if (!als_dev)
+		return -ENOMEM;
+
 	als_dev->hid_dev = hdev;
 	als_dev->cfg_report = state_field->report;
 	als_dev->illum_field = illum_field;
 
 	als_dev->cur_hysteresis = APPLEALS_DEF_CHANGE_SENS;
 	als_dev->cur_sensitivity = APPLEALS_DEF_CHANGE_SENS;
+
+	hid_set_drvdata(hdev, als_dev);
+
+	rc = hid_hw_start(hdev, HID_CONNECT_DRIVER);
+	if (rc) {
+		hid_err(hdev, "als: hw start failed (%d)\n", rc);
+		return rc;
+	}
+
+	hid_device_io_start(hdev);
 	appleals_config_sensor(als_dev, false, als_dev->cur_sensitivity);
+	hid_device_io_stop(hdev);
 
-	return appleals_config_iio(als_dev);
-}
+	rc = appleals_config_iio(als_dev);
+	if (rc)
+		return rc;
 
-static void appleals_remove(struct hid_device *hdev)
-{
-	struct appleals_device *als_dev =
-		appleib_get_drvdata(hid_get_drvdata(hdev),
-				    &appleals_hid_driver);
-
-	iio_device_unregister(als_dev->iio_dev);
-
-	iio_trigger_unregister(als_dev->iio_trig);
-	iio_trigger_free(als_dev->iio_trig);
-
-	iio_triggered_buffer_cleanup(als_dev->iio_dev);
-	iio_device_free(als_dev->iio_dev);
-
-	als_dev->hid_dev = NULL;
+	return hid_hw_open(hdev);
 }
 
 #ifdef CONFIG_PM
 static int appleals_reset_resume(struct hid_device *hdev)
 {
-	struct appleals_device *als_dev =
-		appleib_get_drvdata(hid_get_drvdata(hdev),
-				    &appleals_hid_driver);
+	struct appleals_device *als_dev = hid_get_drvdata(hdev);
+	__s32 illum;
 
 	appleals_config_sensor(als_dev, als_dev->events_enabled,
 			       als_dev->cur_sensitivity);
+
+	illum = appleals_get_field_value(als_dev, als_dev->illum_field);
+	appleals_push_new_value(als_dev, illum);
 
 	return 0;
 }
 #endif
 
+static const struct hid_device_id appleals_hid_ids[] = {
+	{ HID_USB_DEVICE(USB_VENDOR_ID_LINUX_FOUNDATION,
+			 USB_DEVICE_ID_IBRIDGE_ALS) },
+	{ },
+};
+
+MODULE_DEVICE_TABLE(hid, appleals_hid_ids);
+
 static struct hid_driver appleals_hid_driver = {
 	.name = "apple-ib-als",
+	.id_table = appleals_hid_ids,
 	.probe = appleals_probe,
-	.remove = appleals_remove,
 	.event = appleals_hid_event,
 #ifdef CONFIG_PM
 	.reset_resume = appleals_reset_resume,
 #endif
 };
 
-static int appleals_platform_probe(struct platform_device *pdev)
-{
-	struct appleib_device_data *ddata = pdev->dev.platform_data;
-	struct appleib_device *ib_dev = ddata->ib_dev;
-	struct appleals_device *als_dev;
-	int rc;
-
-	als_dev = kzalloc(sizeof(*als_dev), GFP_KERNEL);
-	if (!als_dev)
-		return -ENOMEM;
-
-	als_dev->ib_dev = ib_dev;
-	als_dev->log_dev = ddata->log_dev;
-
-	rc = appleib_register_hid_driver(ib_dev, &appleals_hid_driver, als_dev);
-	if (rc)
-		goto error;
-
-	platform_set_drvdata(pdev, als_dev);
-
-	return 0;
-
-error:
-	kfree(als_dev);
-	return rc;
-}
-
-static int appleals_platform_remove(struct platform_device *pdev)
-{
-	struct appleib_device_data *ddata = pdev->dev.platform_data;
-	struct appleib_device *ib_dev = ddata->ib_dev;
-	struct appleals_device *als_dev = platform_get_drvdata(pdev);
-	int rc;
-
-	rc = appleib_unregister_hid_driver(ib_dev, &appleals_hid_driver);
-	if (rc)
-		goto error;
-
-	kfree(als_dev);
-
-	return 0;
-
-error:
-	return rc;
-}
-
-static const struct platform_device_id appleals_platform_ids[] = {
-	{ .name = PLAT_NAME_IB_ALS },
-	{ }
-};
-MODULE_DEVICE_TABLE(platform, appleals_platform_ids);
-
-static struct platform_driver appleals_platform_driver = {
-	.id_table = appleals_platform_ids,
-	.driver = {
-		.name	= "apple-ib-als",
-	},
-	.probe = appleals_platform_probe,
-	.remove = appleals_platform_remove,
-};
-
-module_platform_driver(appleals_platform_driver);
+module_hid_driver(appleals_hid_driver);
 
 MODULE_AUTHOR("Ronald Tschalär");
 MODULE_DESCRIPTION("Apple iBridge ALS driver");
