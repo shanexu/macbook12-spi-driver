@@ -47,6 +47,7 @@
 #define HID_USAGE_MODE		(HID_UP_CUSTOM | 0x0004)
 #define HID_USAGE_APPLE_APP	(HID_UP_APPLE  | 0x0001)
 #define HID_USAGE_DISP		(HID_UP_APPLE  | 0x0021)
+#define HID_USAGE_DISP_AUX1	(HID_UP_APPLE  | 0x0020)
 
 #define APPLETB_MAX_TB_KEYS	13	/* ESC, F1-F12 */
 
@@ -135,14 +136,14 @@ struct appletb_device {
 	bool			active;
 	struct device		*log_dev;
 
-	struct appletb_report_info {
+	struct hid_field	*mode_field;
+	struct hid_field	*disp_field;
+	struct hid_field	*disp_field_aux1;
+	struct appletb_iface_info {
 		struct hid_device	*hdev;
 		struct usb_interface	*usb_iface;
-		unsigned int		usb_epnum;
-		unsigned int		report_id;
-		unsigned int		report_type;
 		bool			suspended;
-	}			mode_info, disp_info;
+	}			mode_iface, disp_iface;
 
 	struct input_handler	inp_handler;
 	struct input_handle	kbd_handle;
@@ -192,46 +193,39 @@ static const struct appletb_key_translation appletb_fn_codes[] = {
 
 static struct appletb_device *appletb_dev;
 
-static int appletb_send_hid_report(struct appletb_report_info *rinfo,
-				   __u8 requesttype, void *data, __u16 size)
+static int appletb_send_usb_ctrl(struct appletb_iface_info *iface_info,
+				 __u8 requesttype, struct hid_report *report,
+				 void *data, __u16 size)
 {
-	void *buffer;
-	struct usb_device *dev = interface_to_usbdev(rinfo->usb_iface);
-	u8 ifnum = rinfo->usb_iface->cur_altsetting->desc.bInterfaceNumber;
+	struct usb_device *dev = interface_to_usbdev(iface_info->usb_iface);
+	u8 ifnum = iface_info->usb_iface->cur_altsetting->desc.bInterfaceNumber;
 	int tries = 0;
 	int rc;
 
-	buffer = kmemdup(data, size, GFP_KERNEL);
-	if (!buffer)
-		return -ENOMEM;
-
 	do {
-		rc = usb_control_msg(dev,
-				     usb_sndctrlpipe(dev, rinfo->usb_epnum),
+		rc = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
 				     HID_REQ_SET_REPORT, requesttype,
-				     rinfo->report_type << 8 | rinfo->report_id,
-				     ifnum, buffer, size, 2000);
+				     (report->type + 1) << 8 | report->id,
+				     ifnum, data, size, 2000);
 		if (rc != -EPIPE)
 			break;
 
 		usleep_range(1000 << tries, 3000 << tries);
 	} while (++tries < 5);
 
-	kfree(buffer);
-
 	return (rc > 0) ? 0 : rc;
 }
 
-static bool appletb_disable_autopm(struct appletb_report_info *rinfo)
+static bool appletb_disable_autopm(struct hid_device *hdev)
 {
 	int rc;
 
-	rc = hid_hw_power(rinfo->hdev, PM_HINT_FULLON);
+	rc = hid_hw_power(hdev, PM_HINT_FULLON);
 
 	if (rc == 0)
 		return true;
 
-	hid_err(rinfo->hdev,
+	hid_err(hdev,
 		"Failed to disable auto-pm on touch bar device (%d)\n", rc);
 	return false;
 }
@@ -239,24 +233,59 @@ static bool appletb_disable_autopm(struct appletb_report_info *rinfo)
 static int appletb_set_tb_mode(struct appletb_device *tb_dev,
 			       unsigned char mode)
 {
-	int rc;
+	void *buf;
 	bool autopm_off = false;
+	int rc;
 
-	if (!tb_dev->mode_info.usb_iface)
+	if (!tb_dev->mode_iface.hdev)
 		return -ENOTCONN;
 
-	autopm_off = appletb_disable_autopm(&tb_dev->mode_info);
+	buf = kmemdup(&mode, 1, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
 
-	rc = appletb_send_hid_report(&tb_dev->mode_info,
-				     USB_DIR_OUT | USB_TYPE_VENDOR |
+	autopm_off = appletb_disable_autopm(tb_dev->mode_iface.hdev);
+
+	rc = appletb_send_usb_ctrl(&tb_dev->mode_iface,
+				   USB_DIR_OUT | USB_TYPE_VENDOR |
 							USB_RECIP_DEVICE,
-				     &mode, 1);
+				   tb_dev->mode_field->report, buf, 1);
 	if (rc < 0)
 		dev_err(tb_dev->log_dev,
 			"Failed to set touch bar mode to %u (%d)\n", mode, rc);
 
 	if (autopm_off)
-		hid_hw_power(tb_dev->mode_info.hdev, PM_HINT_NORMAL);
+		hid_hw_power(tb_dev->mode_iface.hdev, PM_HINT_NORMAL);
+
+	kfree(buf);
+
+	return rc;
+}
+
+/*
+ * We don't use hid_hw_request() because that doesn't allow us to get the
+ * returned status from the usb-control request; we also don't use
+ * hid_hw_raw_request() because would mean duplicating the retry-on-EPIPE
+ * in our appletb_send_usb_ctrl().
+ */
+static int appletb_send_hid_report(struct appletb_iface_info *iface_info,
+				   struct hid_report *report)
+{
+	unsigned char *buf;
+	int rc;
+
+	buf = hid_alloc_report_buf(report, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	hid_output_report(report, buf);
+
+	rc = appletb_send_usb_ctrl(iface_info,
+				   USB_DIR_OUT | USB_TYPE_CLASS |
+							USB_RECIP_INTERFACE,
+				   report, buf, hid_report_len(report));
+
+	kfree(buf);
 
 	return rc;
 }
@@ -264,11 +293,22 @@ static int appletb_set_tb_mode(struct appletb_device *tb_dev,
 static int appletb_set_tb_disp(struct appletb_device *tb_dev,
 			       unsigned char disp)
 {
-	unsigned char report[] = { 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	struct hid_report *report;
 	int rc;
 
-	if (!tb_dev->disp_info.usb_iface)
+	if (!tb_dev->disp_iface.hdev)
 		return -ENOTCONN;
+
+	report = tb_dev->disp_field->report;
+
+	rc = hid_set_field(tb_dev->disp_field_aux1, 0, 1);
+	if (!rc)
+		rc = hid_set_field(tb_dev->disp_field, 0, disp);
+	if (rc) {
+		dev_err(tb_dev->log_dev,
+			"Failed to set display report fields (%d)\n", rc);
+		return rc;
+	}
 
 	/*
 	 * Keep the USB interface powered on while the touch bar display is on
@@ -276,22 +316,17 @@ static int appletb_set_tb_disp(struct appletb_device *tb_dev,
 	 */
 	if (disp != APPLETB_CMD_DISP_OFF && !tb_dev->tb_autopm_off)
 		tb_dev->tb_autopm_off =
-			appletb_disable_autopm(&tb_dev->disp_info);
+			appletb_disable_autopm(report->device);
 
-	report[0] = tb_dev->disp_info.report_id;
-	report[2] = disp;
+	rc = appletb_send_hid_report(&tb_dev->disp_iface, report);
 
-	rc = appletb_send_hid_report(&tb_dev->disp_info,
-				     USB_DIR_OUT | USB_TYPE_CLASS |
-						USB_RECIP_INTERFACE,
-				     report, sizeof(report));
 	if (rc < 0)
 		dev_err(tb_dev->log_dev,
 			"Failed to set touch bar display to %u (%d)\n", disp,
 			rc);
 
 	if (disp == APPLETB_CMD_DISP_OFF && tb_dev->tb_autopm_off) {
-		hid_hw_power(tb_dev->disp_info.hdev, PM_HINT_NORMAL);
+		hid_hw_power(tb_dev->disp_iface.hdev, PM_HINT_NORMAL);
 		tb_dev->tb_autopm_off = false;
 	}
 
@@ -340,7 +375,7 @@ static void appletb_set_tb_worker(struct work_struct *work)
 		rc2 = appletb_set_tb_disp(tb_dev, pending_disp);
 
 	if (restore_autopm && tb_dev->tb_autopm_off)
-		appletb_disable_autopm(&tb_dev->disp_info);
+		appletb_disable_autopm(tb_dev->disp_field->report->device);
 
 	spin_lock_irqsave(&tb_dev->tb_lock, flags);
 
@@ -912,25 +947,39 @@ static int appletb_input_configured(struct hid_device *hdev,
 	return 0;
 }
 
-static int appletb_fill_report_info(struct appletb_device *tb_dev,
-				    struct hid_device *hdev)
+static int appletb_extract_report_info(struct appletb_device *tb_dev,
+				       struct hid_device *hdev)
 {
-	struct appletb_report_info *report_info = NULL;
+	struct appletb_iface_info *iface_info;
 	struct usb_interface *usb_iface;
 	struct hid_field *field;
 
 	field = appleib_find_hid_field(hdev, HID_GD_KEYBOARD, HID_USAGE_MODE);
 	if (field) {
-		report_info = &tb_dev->mode_info;
+		iface_info = &tb_dev->mode_iface;
+		tb_dev->mode_field = field;
 	} else {
 		field = appleib_find_hid_field(hdev, HID_USAGE_APPLE_APP,
 					       HID_USAGE_DISP);
-		if (field)
-			report_info = &tb_dev->disp_info;
-	}
+		if (!field)
+			return 0;
 
-	if (!report_info)
-		return 0;
+		iface_info = &tb_dev->disp_iface;
+		tb_dev->disp_field = field;
+		tb_dev->disp_field_aux1 =
+			appleib_find_hid_field(hdev, HID_USAGE_APPLE_APP,
+					       HID_USAGE_DISP_AUX1);
+
+		if (!tb_dev->disp_field_aux1 ||
+		    tb_dev->disp_field_aux1->report !=
+						tb_dev->disp_field->report) {
+			dev_err(tb_dev->log_dev,
+				"Unexpected report structure for report %u in device %s\n",
+				tb_dev->disp_field->report->id,
+				dev_name(&hdev->dev));
+			return -ENODEV;
+		}
+	}
 
 	usb_iface = appletb_get_usb_iface(hdev);
 	if (!usb_iface) {
@@ -940,31 +989,20 @@ static int appletb_fill_report_info(struct appletb_device *tb_dev,
 		return -ENODEV;
 	}
 
-	report_info->hdev = hdev;
-
-	report_info->usb_iface = usb_get_intf(usb_iface);
-	report_info->usb_epnum = 0;
-
-	report_info->report_id = field->report->id;
-	switch (field->report->type) {
-	case HID_INPUT_REPORT:
-		report_info->report_type = 0x01; break;
-	case HID_OUTPUT_REPORT:
-		report_info->report_type = 0x02; break;
-	case HID_FEATURE_REPORT:
-		report_info->report_type = 0x03; break;
-	}
+	iface_info->hdev = hdev;
+	iface_info->usb_iface = usb_get_intf(usb_iface);
+	iface_info->suspended = false;
 
 	return 1;
 }
 
-static struct appletb_report_info *
-appletb_get_report_info(struct appletb_device *tb_dev, struct hid_device *hdev)
+static struct appletb_iface_info *
+appletb_get_iface_info(struct appletb_device *tb_dev, struct hid_device *hdev)
 {
-	if (hdev == tb_dev->mode_info.hdev)
-		return &tb_dev->mode_info;
-	if (hdev == tb_dev->disp_info.hdev)
-		return &tb_dev->disp_info;
+	if (hdev == tb_dev->mode_iface.hdev)
+		return &tb_dev->mode_iface;
+	if (hdev == tb_dev->disp_iface.hdev)
+		return &tb_dev->disp_iface;
 	return NULL;
 }
 
@@ -975,7 +1013,7 @@ static bool appletb_test_and_mark_active(struct appletb_device *tb_dev)
 
 	spin_lock_irqsave(&tb_dev->tb_lock, flags);
 
-	if (tb_dev->mode_info.hdev && tb_dev->disp_info.hdev &&
+	if (tb_dev->mode_iface.hdev && tb_dev->disp_iface.hdev &&
 	    !tb_dev->active) {
 		tb_dev->active = true;
 		activated = true;
@@ -994,10 +1032,10 @@ static bool appletb_test_and_mark_inactive(struct appletb_device *tb_dev,
 
 	spin_lock_irqsave(&tb_dev->tb_lock, flags);
 
-	if (tb_dev->mode_info.hdev && tb_dev->disp_info.hdev &&
+	if (tb_dev->mode_iface.hdev && tb_dev->disp_iface.hdev &&
 	    tb_dev->active &&
-	    (hdev == tb_dev->mode_info.hdev ||
-	     hdev == tb_dev->disp_info.hdev)) {
+	    (hdev == tb_dev->mode_iface.hdev ||
+	     hdev == tb_dev->disp_iface.hdev)) {
 		tb_dev->active = false;
 		deactivated = true;
 	}
@@ -1029,7 +1067,7 @@ static int appletb_probe(struct hid_device *hdev,
 			 const struct hid_device_id *id)
 {
 	struct appletb_device *tb_dev = appletb_dev;
-	struct appletb_report_info *report_info;
+	struct appletb_iface_info *iface_info;
 	unsigned long flags;
 	int rc;
 
@@ -1049,14 +1087,14 @@ static int appletb_probe(struct hid_device *hdev,
 		goto error;
 	}
 
-	rc = appletb_fill_report_info(tb_dev, hdev);
+	rc = appletb_extract_report_info(tb_dev, hdev);
 	if (rc < 0)
 		goto error;
 
 	rc = hid_hw_start(hdev, HID_CONNECT_DRIVER | HID_CONNECT_HIDINPUT);
 	if (rc) {
 		dev_err(tb_dev->log_dev, "hw start failed (%d)\n", rc);
-		goto clear_report_info;
+		goto clear_iface_info;
 	}
 
 	rc = hid_hw_open(hdev);
@@ -1099,7 +1137,7 @@ static int appletb_probe(struct hid_device *hdev,
 		}
 
 		/* initialize sysfs attributes */
-		rc = sysfs_create_group(&tb_dev->mode_info.hdev->dev.kobj,
+		rc = sysfs_create_group(&tb_dev->mode_iface.hdev->dev.kobj,
 					&appletb_attr_group);
 		if (rc) {
 			dev_err(tb_dev->log_dev,
@@ -1120,12 +1158,12 @@ mark_inactive:
 	hid_hw_close(hdev);
 stop_hid:
 	hid_hw_stop(hdev);
-clear_report_info:
-	report_info = appletb_get_report_info(tb_dev, hdev);
-	if (report_info) {
-		usb_put_intf(report_info->usb_iface);
-		report_info->usb_iface = NULL;
-		report_info->hdev = NULL;
+clear_iface_info:
+	iface_info = appletb_get_iface_info(tb_dev, hdev);
+	if (iface_info) {
+		usb_put_intf(iface_info->usb_iface);
+		iface_info->usb_iface = NULL;
+		iface_info->hdev = NULL;
 	}
 error:
 	return rc;
@@ -1134,11 +1172,11 @@ error:
 static void appletb_remove(struct hid_device *hdev)
 {
 	struct appletb_device *tb_dev = hid_get_drvdata(hdev);
-	struct appletb_report_info *report_info;
+	struct appletb_iface_info *iface_info;
 	unsigned long flags;
 
 	if (appletb_test_and_mark_inactive(tb_dev, hdev)) {
-		sysfs_remove_group(&tb_dev->mode_info.hdev->dev.kobj,
+		sysfs_remove_group(&tb_dev->mode_iface.hdev->dev.kobj,
 				   &appletb_attr_group);
 
 		input_unregister_handler(&tb_dev->inp_handler);
@@ -1148,7 +1186,7 @@ static void appletb_remove(struct hid_device *hdev)
 		appletb_set_tb_disp(tb_dev, APPLETB_CMD_DISP_ON);
 
 		if (tb_dev->tb_autopm_off)
-			hid_hw_power(tb_dev->disp_info.hdev, PM_HINT_NORMAL);
+			hid_hw_power(tb_dev->disp_iface.hdev, PM_HINT_NORMAL);
 
 		dev_info(tb_dev->log_dev, "Touchbar deactivated\n");
 	}
@@ -1156,20 +1194,20 @@ static void appletb_remove(struct hid_device *hdev)
 	hid_hw_close(hdev);
 	hid_hw_stop(hdev);
 
-	report_info = appletb_get_report_info(tb_dev, hdev);
-	if (report_info) {
-		usb_put_intf(report_info->usb_iface);
-		report_info->usb_iface = NULL;
-		report_info->hdev = NULL;
+	iface_info = appletb_get_iface_info(tb_dev, hdev);
+	if (iface_info) {
+		usb_put_intf(iface_info->usb_iface);
+		iface_info->usb_iface = NULL;
+		iface_info->hdev = NULL;
 	}
 
 	spin_lock_irqsave(&tb_dev->tb_lock, flags);
 
 	if (tb_dev->log_dev == &hdev->dev) {
-		if (tb_dev->mode_info.hdev)
-			tb_dev->log_dev = &tb_dev->mode_info.hdev->dev;
-		else if (tb_dev->disp_info.hdev)
-			tb_dev->log_dev = &tb_dev->disp_info.hdev->dev;
+		if (tb_dev->mode_iface.hdev)
+			tb_dev->log_dev = &tb_dev->mode_iface.hdev->dev;
+		else if (tb_dev->disp_iface.hdev)
+			tb_dev->log_dev = &tb_dev->disp_iface.hdev->dev;
 		else
 			tb_dev->log_dev = NULL;
 	}
@@ -1181,6 +1219,7 @@ static void appletb_remove(struct hid_device *hdev)
 static int appletb_suspend(struct hid_device *hdev, pm_message_t message)
 {
 	struct appletb_device *tb_dev = hid_get_drvdata(hdev);
+	struct appletb_iface_info *iface_info;
 	unsigned long flags;
 	bool all_suspended = false;
 
@@ -1194,15 +1233,17 @@ static int appletb_suspend(struct hid_device *hdev, pm_message_t message)
 	 */
 	spin_lock_irqsave(&tb_dev->tb_lock, flags);
 
-	if (!tb_dev->mode_info.suspended && !tb_dev->disp_info.suspended) {
+	if (!tb_dev->mode_iface.suspended && !tb_dev->disp_iface.suspended) {
 		tb_dev->active = false;
 		cancel_delayed_work(&tb_dev->tb_work);
 	}
 
-	appletb_get_report_info(tb_dev, hdev)->suspended = true;
+	iface_info = appletb_get_iface_info(tb_dev, hdev);
+	if (iface_info)
+		iface_info->suspended = true;
 
-	if ((!tb_dev->mode_info.hdev || tb_dev->mode_info.suspended) &&
-	    (!tb_dev->disp_info.hdev || tb_dev->disp_info.suspended))
+	if ((!tb_dev->mode_iface.hdev || tb_dev->mode_iface.suspended) &&
+	    (!tb_dev->disp_iface.hdev || tb_dev->disp_iface.suspended))
 		all_suspended = true;
 
 	spin_unlock_irqrestore(&tb_dev->tb_lock, flags);
@@ -1241,18 +1282,21 @@ static int appletb_suspend(struct hid_device *hdev, pm_message_t message)
 static int appletb_reset_resume(struct hid_device *hdev)
 {
 	struct appletb_device *tb_dev = hid_get_drvdata(hdev);
+	struct appletb_iface_info *iface_info;
 	unsigned long flags;
 
-	/*
-	 * Restore touch bar state. Note that autopm state is preserved, no need
-	 * explicitly restore that here.
-	 */
 	spin_lock_irqsave(&tb_dev->tb_lock, flags);
 
-	appletb_get_report_info(tb_dev, hdev)->suspended = false;
+	iface_info = appletb_get_iface_info(tb_dev, hdev);
+	if (iface_info)
+		iface_info->suspended = false;
 
-	if ((tb_dev->mode_info.hdev && !tb_dev->mode_info.suspended) &&
-	    (tb_dev->disp_info.hdev && !tb_dev->disp_info.suspended)) {
+	if ((tb_dev->mode_iface.hdev && !tb_dev->mode_iface.suspended) &&
+	    (tb_dev->disp_iface.hdev && !tb_dev->disp_iface.suspended)) {
+		/*
+		 * Restore touch bar state. Note that autopm state is not
+		 * preserved, so need explicitly restore that here.
+	 	 */
 		tb_dev->active = true;
 		tb_dev->restore_autopm = true;
 		tb_dev->last_event_time = ktime_get();
