@@ -9,19 +9,32 @@
  * MacBookPro models with an iBridge chip (13,[23] and 14,[23]) have an
  * ambient light sensor that is exposed via one of the USB interfaces on
  * the iBridge as a standard HID light sensor. However, we cannot use the
- * existing hid-sensor-als driver, for two reasons:
+ * existing hid-sensor-als driver, for the following reasons:
  *
  * 1. The hid-sensor-als driver is part of the hid-sensor-hub which in turn
  *    is a hid driver, but you can't have more than one hid driver per hid
  *    device, which is a problem because the touch bar also needs to
  *    register as a driver for this hid device.
+ *    (FIXME: not true if we use multiple virtual-hdev's per sub-driver)
  *
- * 2. While the hid-sensors-als driver stores sensor readings received via
- *    interrupt in an iio buffer, reads on the sysfs
- *    .../iio:deviceX/in_illuminance_YYY attribute result in a get of the
- *    feature report; however, in the case of this sensor here the
- *    illuminance field of that report is always 0. Instead, the input
- *    report needs to be requested.
+ * 2. The hid-sensor-hub expects the hid reports to be wrapped in a physical
+ *    collection, but this sensor has them wrapped in an application
+ *    collection.
+ *
+ * 3. The hid-sensor-attributes expects the absolute sensitivity to reported
+ *    with a usage of 030Fh (Property: Change Sensitivity Absolute), and
+ *    hid-sensor-als also tests for 04D0h (Data Field: Light + Modifier:
+ *    Change Sensitivity Absolute); however the device's report uses a usage
+ *    of 14D1h (Data Field: Illuminance + Modifier: Change Sensitivity
+ *    Absolute)
+
+ * 4. The device needs to be explicitly powered up before making various
+ *    requests - this may be a timing issue, but the async pm calls done
+ *    by the usbhid driver do not appear to be sufficient.
+ *    (FIXME: the hid-sensor-als seems to be ok here)
+ *
+ * 5. This driver implements a dynamic sensitivity mode, basically a
+ *    relative-percent sensitivity.
  */
 
 #define dev_fmt(fmt) "als: " fmt
@@ -66,13 +79,14 @@ static struct hid_driver appleals_hid_driver;
  * set to that range's sensitivity. But in order to reduce flapping when the
  * brightness is right on the border between two ranges, the ranges overlap
  * somewhat (by at least one sensitivity), and sensitivity is only changed if
- * the value leaves the current sensitivity's range.
+ * the value leaves the current sensitivity's range (i.e. there's a hysteresis
+ * between the individual ranges).
  *
  * The values chosen for the map are somewhat arbitrary: a compromise of not
- * too many ranges (and hence changing the sensitivity) but not too small or
- * large of a percentage of the min and max values in the range (currently
- * from 7.5% to 30%, i.e. within a factor of 2 of 15%), as well as just plain
- * "this feels reasonable to me".
+ * too many ranges (and hence changing the sensitivity too often) but not too
+ * small or large of a percentage of the min and max values in the range
+ * (currently from 7.5% to 30%, i.e. within a factor of 2 of 15%), as well as
+ * just plain "this feels reasonable to me and seems to work well".
  */
 struct appleals_sensitivity_map {
 	int	sensitivity;
