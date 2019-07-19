@@ -79,16 +79,73 @@ struct appleib_hid_dev_info {
 	struct hid_device	*sub_hdevs[ARRAY_SIZE(appleib_sub_hid_ids)];
 };
 
-static void appleib_remove_device(struct hid_device *hdev)
+/**
+ * appleib_find_report_field() - Find the field in the report with the given
+ * usage.
+ * @report: the report to search
+ * @field_usage: the usage of the field to search for
+ *
+ * Returns: the hid field if found, or NULL if none found.
+ */
+struct hid_field *appleib_find_report_field(struct hid_report *report,
+					    unsigned int field_usage)
 {
-	struct appleib_hid_dev_info *hdev_info = hid_get_drvdata(hdev);
-	int i;
+	int f, u;
 
-	for (i = 0; i < ARRAY_SIZE(hdev_info->sub_hdevs); i++)
-		hid_destroy_device(hdev_info->sub_hdevs[i]);
+	for (f = 0; f < report->maxfield; f++) {
+		struct hid_field *field = report->field[f];
 
-	hid_set_drvdata(hdev, NULL);
+		if (field->logical == field_usage)
+			return field;
+
+		for (u = 0; u < field->maxusage; u++) {
+			if (field->usage[u].hid == field_usage)
+				return field;
+		}
+	}
+
+	return NULL;
 }
+EXPORT_SYMBOL_GPL(appleib_find_report_field);
+
+/**
+ * appleib_find_hid_field() - Search all the reports of the device for the
+ * field with the given usage.
+ * @hdev: the device whose reports to search
+ * @application: the usage of application collection that the field must
+ *               belong to
+ * @field_usage: the usage of the field to search for
+ *
+ * Returns: the hid field if found, or NULL if none found.
+ */
+struct hid_field *appleib_find_hid_field(struct hid_device *hdev,
+					 unsigned int application,
+					 unsigned int field_usage)
+{
+	static const int report_types[] = { HID_INPUT_REPORT, HID_OUTPUT_REPORT,
+					    HID_FEATURE_REPORT };
+	struct hid_report *report;
+	struct hid_field *field;
+	int t;
+
+	for (t = 0; t < ARRAY_SIZE(report_types); t++) {
+		struct list_head *report_list =
+			    &hdev->report_enum[report_types[t]].report_list;
+		list_for_each_entry(report, report_list, list) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
+			if (report->application != application)
+				continue;
+#endif
+
+			field = appleib_find_report_field(report, field_usage);
+			if (field)
+				return field;
+		}
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(appleib_find_hid_field);
 
 static int appleib_hid_raw_event(struct hid_device *hdev,
 				 struct hid_report *report, u8 *data, int size)
@@ -228,74 +285,6 @@ static int appleib_hid_reset_resume(struct hid_device *hdev)
 	return appleib_forward_int_op(hdev, appleib_hid_reset_resume_fwd, NULL);
 }
 #endif /* CONFIG_PM */
-
-/**
- * appleib_find_report_field() - Find the field in the report with the given
- * usage.
- * @report: the report to search
- * @field_usage: the usage of the field to search for
- *
- * Returns: the hid field if found, or NULL if none found.
- */
-struct hid_field *appleib_find_report_field(struct hid_report *report,
-					    unsigned int field_usage)
-{
-	int f, u;
-
-	for (f = 0; f < report->maxfield; f++) {
-		struct hid_field *field = report->field[f];
-
-		if (field->logical == field_usage)
-			return field;
-
-		for (u = 0; u < field->maxusage; u++) {
-			if (field->usage[u].hid == field_usage)
-				return field;
-		}
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(appleib_find_report_field);
-
-/**
- * appleib_find_hid_field() - Search all the reports of the device for the
- * field with the given usage.
- * @hdev: the device whose reports to search
- * @application: the usage of application collection that the field must
- *               belong to
- * @field_usage: the usage of the field to search for
- *
- * Returns: the hid field if found, or NULL if none found.
- */
-struct hid_field *appleib_find_hid_field(struct hid_device *hdev,
-					 unsigned int application,
-					 unsigned int field_usage)
-{
-	static const int report_types[] = { HID_INPUT_REPORT, HID_OUTPUT_REPORT,
-					    HID_FEATURE_REPORT };
-	struct hid_report *report;
-	struct hid_field *field;
-	int t;
-
-	for (t = 0; t < ARRAY_SIZE(report_types); t++) {
-		struct list_head *report_list =
-			    &hdev->report_enum[report_types[t]].report_list;
-		list_for_each_entry(report, report_list, list) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
-			if (report->application != application)
-				continue;
-#endif
-
-			field = appleib_find_report_field(report, field_usage);
-			if (field)
-				return field;
-		}
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL_GPL(appleib_find_hid_field);
 
 static int appleib_ll_start(struct hid_device *hdev)
 {
@@ -448,6 +437,17 @@ static struct appleib_hid_dev_info *appleib_add_device(struct hid_device *hdev)
 	}
 
 	return hdev_info;
+}
+
+static void appleib_remove_device(struct hid_device *hdev)
+{
+	struct appleib_hid_dev_info *hdev_info = hid_get_drvdata(hdev);
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(hdev_info->sub_hdevs); i++)
+		hid_destroy_device(hdev_info->sub_hdevs[i]);
+
+	hid_set_drvdata(hdev, NULL);
 }
 
 static int appleib_hid_probe(struct hid_device *hdev,
