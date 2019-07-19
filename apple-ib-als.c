@@ -286,8 +286,7 @@ static int appleals_read_raw(struct iio_dev *iio_dev,
 			     struct iio_chan_spec const *chan,
 			     int *val, int *val2, long mask)
 {
-	struct appleals_device **priv = iio_priv(iio_dev);
-	struct appleals_device *als_dev = *priv;
+	struct appleals_device *als_dev = iio_priv(iio_dev);
 	__s32 value;
 	int rc;
 
@@ -335,8 +334,7 @@ static int appleals_write_raw(struct iio_dev *iio_dev,
 			      struct iio_chan_spec const *chan,
 			      int val, int val2, long mask)
 {
-	struct appleals_device **priv = iio_priv(iio_dev);
-	struct appleals_device *als_dev = *priv;
+	struct appleals_device *als_dev = iio_priv(iio_dev);
 	__s32 illum;
 	int rc;
 
@@ -467,18 +465,10 @@ static void appleals_config_sensor(struct appleals_device *als_dev,
 
 static int appleals_config_iio(struct appleals_device *als_dev)
 {
-	struct iio_dev *iio_dev;
+	struct iio_dev *iio_dev = iio_priv_to_dev(als_dev);
 	struct iio_trigger *iio_trig;
-	struct appleals_device **priv;
 	struct device *parent = &als_dev->hid_dev->dev;
 	int rc;
-
-	iio_dev = devm_iio_device_alloc(parent, sizeof(als_dev));
-	if (!iio_dev)
-		return -ENOMEM;
-
-	priv = iio_priv(iio_dev);
-	*priv = als_dev;
 
 	iio_dev->channels = appleals_channels;
 	iio_dev->num_channels = ARRAY_SIZE(appleals_channels);
@@ -529,6 +519,7 @@ static int appleals_probe(struct hid_device *hdev,
 			  const struct hid_device_id *id)
 {
 	struct appleals_device *als_dev;
+	struct iio_dev *iio_dev;
 	struct hid_field *state_field;
 	struct hid_field *illum_field;
 	int rc;
@@ -550,9 +541,11 @@ static int appleals_probe(struct hid_device *hdev,
 	hid_dbg(hdev, "Found ambient light sensor\n");
 
 	/* initialize device */
-	als_dev = devm_kzalloc(&hdev->dev, sizeof(*als_dev), GFP_KERNEL);
-	if (!als_dev)
+	iio_dev = devm_iio_device_alloc(&hdev->dev, sizeof(*als_dev));
+	if (!iio_dev)
 		return -ENOMEM;
+
+	als_dev = iio_priv(iio_dev);
 
 	als_dev->hid_dev = hdev;
 	als_dev->cfg_report = state_field->report;
