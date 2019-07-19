@@ -302,11 +302,16 @@ static int appletb_set_tb_disp(struct appletb_device *tb_dev,
 	report = tb_dev->disp_field->report;
 
 	rc = hid_set_field(tb_dev->disp_field_aux1, 0, 1);
-	if (!rc)
-		rc = hid_set_field(tb_dev->disp_field, 0, disp);
 	if (rc) {
 		dev_err(tb_dev->log_dev,
-			"Failed to set display report fields (%d)\n", rc);
+			"Failed to set display report field (%d)\n", rc);
+		return rc;
+	}
+
+	rc = hid_set_field(tb_dev->disp_field, 0, disp);
+	if (rc) {
+		dev_err(tb_dev->log_dev,
+			"Failed to set display report field (%d)\n", rc);
 		return rc;
 	}
 
@@ -319,7 +324,6 @@ static int appletb_set_tb_disp(struct appletb_device *tb_dev,
 			appletb_disable_autopm(report->device);
 
 	rc = appletb_send_hid_report(&tb_dev->disp_iface, report);
-
 	if (rc < 0)
 		dev_err(tb_dev->log_dev,
 			"Failed to set touch bar display to %u (%d)\n", disp,
