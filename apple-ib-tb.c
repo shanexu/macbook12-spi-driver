@@ -951,8 +951,18 @@ static int appletb_input_configured(struct hid_device *hdev,
 	return 0;
 }
 
-static int appletb_extract_report_info(struct appletb_device *tb_dev,
-				       struct hid_device *hdev)
+static struct appletb_iface_info *
+appletb_get_iface_info(struct appletb_device *tb_dev, struct hid_device *hdev)
+{
+	if (hdev == tb_dev->mode_iface.hdev)
+		return &tb_dev->mode_iface;
+	if (hdev == tb_dev->disp_iface.hdev)
+		return &tb_dev->disp_iface;
+	return NULL;
+}
+
+static int appletb_extract_report_and_iface_info(struct appletb_device *tb_dev,
+						 struct hid_device *hdev)
 {
 	struct appletb_iface_info *iface_info;
 	struct usb_interface *usb_iface;
@@ -1000,14 +1010,17 @@ static int appletb_extract_report_info(struct appletb_device *tb_dev,
 	return 1;
 }
 
-static struct appletb_iface_info *
-appletb_get_iface_info(struct appletb_device *tb_dev, struct hid_device *hdev)
+static void appletb_clear_iface_info(struct appletb_device *tb_dev,
+				     struct hid_device *hdev)
 {
-	if (hdev == tb_dev->mode_iface.hdev)
-		return &tb_dev->mode_iface;
-	if (hdev == tb_dev->disp_iface.hdev)
-		return &tb_dev->disp_iface;
-	return NULL;
+	struct appletb_iface_info *iface_info;
+
+	iface_info = appletb_get_iface_info(tb_dev, hdev);
+	if (iface_info) {
+		usb_put_intf(iface_info->usb_iface);
+		iface_info->usb_iface = NULL;
+		iface_info->hdev = NULL;
+	}
 }
 
 static bool appletb_test_and_mark_active(struct appletb_device *tb_dev)
@@ -1071,7 +1084,6 @@ static int appletb_probe(struct hid_device *hdev,
 			 const struct hid_device_id *id)
 {
 	struct appletb_device *tb_dev = appletb_dev;
-	struct appletb_iface_info *iface_info;
 	unsigned long flags;
 	int rc;
 
@@ -1091,7 +1103,7 @@ static int appletb_probe(struct hid_device *hdev,
 		goto error;
 	}
 
-	rc = appletb_extract_report_info(tb_dev, hdev);
+	rc = appletb_extract_report_and_iface_info(tb_dev, hdev);
 	if (rc < 0)
 		goto error;
 
@@ -1163,12 +1175,7 @@ mark_inactive:
 stop_hid:
 	hid_hw_stop(hdev);
 clear_iface_info:
-	iface_info = appletb_get_iface_info(tb_dev, hdev);
-	if (iface_info) {
-		usb_put_intf(iface_info->usb_iface);
-		iface_info->usb_iface = NULL;
-		iface_info->hdev = NULL;
-	}
+	appletb_clear_iface_info(tb_dev, hdev);
 error:
 	return rc;
 }
@@ -1176,7 +1183,6 @@ error:
 static void appletb_remove(struct hid_device *hdev)
 {
 	struct appletb_device *tb_dev = hid_get_drvdata(hdev);
-	struct appletb_iface_info *iface_info;
 	unsigned long flags;
 
 	if (appletb_test_and_mark_inactive(tb_dev, hdev)) {
@@ -1197,13 +1203,7 @@ static void appletb_remove(struct hid_device *hdev)
 
 	hid_hw_close(hdev);
 	hid_hw_stop(hdev);
-
-	iface_info = appletb_get_iface_info(tb_dev, hdev);
-	if (iface_info) {
-		usb_put_intf(iface_info->usb_iface);
-		iface_info->usb_iface = NULL;
-		iface_info->hdev = NULL;
-	}
+	appletb_clear_iface_info(tb_dev, hdev);
 
 	spin_lock_irqsave(&tb_dev->tb_lock, flags);
 
