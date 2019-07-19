@@ -251,17 +251,16 @@ static int appleals_hid_event(struct hid_device *hdev, struct hid_field *field,
 			      struct hid_usage *usage, __s32 value)
 {
 	struct appleals_device *als_dev = hid_get_drvdata(hdev);
-	int rc = 0;
 
 	if ((usage->hid & HID_USAGE_PAGE) != HID_UP_SENSOR)
 		return 0;
 
 	if (usage->hid == HID_USAGE_SENSOR_LIGHT_ILLUM) {
 		appleals_push_new_value(als_dev, value);
-		rc = 1;
+		return 1;
 	}
 
-	return rc;
+	return 0;
 }
 
 static int appleals_enable_events(struct iio_trigger *trig, bool enable)
