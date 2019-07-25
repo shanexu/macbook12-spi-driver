@@ -592,6 +592,7 @@ static int appleals_reset_resume(struct hid_device *hdev)
 static const struct hid_device_id appleals_hid_ids[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_LINUX_FOUNDATION,
 			 USB_DEVICE_ID_IBRIDGE_ALS) },
+	{ HID_USB_DEVICE(/* USB_VENDOR_ID_APPLE */ 0x05ac, 0x8262) },
 	{ },
 };
 

@@ -123,10 +123,14 @@ static ssize_t fnmode_store(struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t size);
 static DEVICE_ATTR_RW(fnmode);
 
+static bool use_correct_report = false;
+static DEVICE_BOOL_ATTR(alt, 0644, use_correct_report);
+
 static struct attribute *appletb_attrs[] = {
 	&dev_attr_idle_timeout.attr,
 	&dev_attr_dim_timeout.attr,
 	&dev_attr_fnmode.attr,
+	&dev_attr_alt.attr.attr,
 	NULL,
 };
 
@@ -171,6 +175,8 @@ struct appletb_device {
 	int			idle_timeout;
 	bool			dim_to_is_calc;
 	int			fn_mode;
+
+	bool			is_t2;
 };
 
 struct appletb_key_translation {
@@ -242,6 +248,7 @@ static bool appletb_disable_autopm(struct hid_device *hdev)
 static int appletb_set_tb_mode(struct appletb_device *tb_dev,
 			       unsigned char mode)
 {
+	struct hid_report *report;
 	void *buf;
 	bool autopm_off = false;
 	int rc;
@@ -249,16 +256,29 @@ static int appletb_set_tb_mode(struct appletb_device *tb_dev,
 	if (!tb_dev->mode_iface.hdev)
 		return -ENOTCONN;
 
-	buf = kmemdup(&mode, 1, GFP_KERNEL);
+	report = tb_dev->mode_field->report;
+
+	if (tb_dev->is_t2) {
+		char data[] = { use_correct_report ? report->id : 0, mode };
+		buf = kmemdup(data, sizeof(data), GFP_KERNEL);
+	} else {
+		buf = kmemdup(&mode, 1, GFP_KERNEL);
+	}
 	if (!buf)
 		return -ENOMEM;
 
 	autopm_off = appletb_disable_autopm(tb_dev->mode_iface.hdev);
 
-	rc = appletb_send_usb_ctrl(&tb_dev->mode_iface,
-				   USB_DIR_OUT | USB_TYPE_VENDOR |
-							USB_RECIP_DEVICE,
-				   tb_dev->mode_field->report, buf, 1);
+	if (tb_dev->is_t2)
+		rc = appletb_send_usb_ctrl(&tb_dev->mode_iface,
+					   USB_DIR_OUT | USB_TYPE_CLASS |
+					   USB_RECIP_INTERFACE,
+					   report, buf, 2);
+	else
+		rc = appletb_send_usb_ctrl(&tb_dev->mode_iface,
+					   USB_DIR_OUT | USB_TYPE_VENDOR |
+					   USB_RECIP_DEVICE,
+					   report, buf, 1);
 	if (rc < 0)
 		dev_err(tb_dev->log_dev,
 			"Failed to set touch bar mode to %u (%d)\n", mode, rc);
@@ -841,7 +861,8 @@ static void appletb_inp_event(struct input_handle *handle, unsigned int type,
 }
 
 /* Find and save the usb-device associated with the touch bar input device */
-static struct usb_interface *appletb_get_usb_iface(struct hid_device *hdev)
+static struct usb_interface *appletb_get_usb_iface(struct hid_device *hdev,
+						   const struct hid_device_id *id)
 {
 	struct device *dev = &hdev->dev;
 
@@ -850,9 +871,12 @@ static struct usb_interface *appletb_get_usb_iface(struct hid_device *hdev)
 		return NULL;
 
 	/* real hid */
-	dev = dev->parent;
-	if (!dev || !dev->bus || strcmp(dev->bus->name, "hid") != 0)
-		return NULL;
+	if (id->vendor == USB_VENDOR_ID_LINUX_FOUNDATION &&
+	    id->product == USB_DEVICE_ID_IBRIDGE_TB) {
+		dev = dev->parent;
+		if (!dev || !dev->bus || strcmp(dev->bus->name, "hid") != 0)
+			return NULL;
+	}
 
 	/* usb dev */
 	dev = dev->parent;
@@ -969,7 +993,8 @@ appletb_get_iface_info(struct appletb_device *tb_dev, struct hid_device *hdev)
 }
 
 static int appletb_extract_report_and_iface_info(struct appletb_device *tb_dev,
-						 struct hid_device *hdev)
+						 struct hid_device *hdev,
+						 const struct hid_device_id *id)
 {
 	struct appletb_iface_info *iface_info;
 	struct usb_interface *usb_iface;
@@ -979,6 +1004,7 @@ static int appletb_extract_report_and_iface_info(struct appletb_device *tb_dev,
 	if (field) {
 		iface_info = &tb_dev->mode_iface;
 		tb_dev->mode_field = field;
+		tb_dev->is_t2 = id->driver_data;
 	} else {
 		field = appleib_find_hid_field(hdev, HID_USAGE_APPLE_APP,
 					       HID_USAGE_DISP);
@@ -1002,7 +1028,7 @@ static int appletb_extract_report_and_iface_info(struct appletb_device *tb_dev,
 		}
 	}
 
-	usb_iface = appletb_get_usb_iface(hdev);
+	usb_iface = appletb_get_usb_iface(hdev, id);
 	if (!usb_iface) {
 		dev_err(tb_dev->log_dev,
 			"Failed to find usb interface for hid device %s\n",
@@ -1110,7 +1136,7 @@ static int appletb_probe(struct hid_device *hdev,
 		goto error;
 	}
 
-	rc = appletb_extract_report_and_iface_info(tb_dev, hdev);
+	rc = appletb_extract_report_and_iface_info(tb_dev, hdev, id);
 	if (rc < 0)
 		goto error;
 
@@ -1346,6 +1372,9 @@ static void appletb_free_device(struct appletb_device *tb_dev)
 static const struct hid_device_id appletb_hid_ids[] = {
 	{ HID_USB_DEVICE(USB_VENDOR_ID_LINUX_FOUNDATION,
 			 USB_DEVICE_ID_IBRIDGE_TB) },
+	{ HID_USB_DEVICE(/* USB_VENDOR_ID_APPLE */ 0x05ac, 0x8102) },
+	{ HID_USB_DEVICE(/* USB_VENDOR_ID_APPLE */ 0x05ac, 0x8302),
+	  .driver_data = 1 },
 	{ },
 };
 
