@@ -232,6 +232,13 @@ static bool appletb_disable_autopm(struct hid_device *hdev)
 	return false;
 }
 
+/*
+ * While the mode functionality is listed as a valid hid report in the usb
+ * interface descriptor, it's not sent that way. Instead it's sent with
+ * different request-type and without a leading report-id in the data. Hence
+ * we need to send it as a custom usb control message rather via any of the
+ * standard hid_hw_*request() functions.
+ */
 static int appletb_set_tb_mode(struct appletb_device *tb_dev,
 			       unsigned char mode)
 {
@@ -581,6 +588,7 @@ static void appletb_update_touchbar_no_lock(struct appletb_device *tb_dev,
 			    "update: need_update=%d, want_mode=%d, cur-mode=%d, want_disp=%d, cur-disp=%d\n",
 			    need_update, want_mode, tb_dev->cur_tb_mode,
 			    want_disp, tb_dev->cur_tb_disp);
+
 	if (need_update) {
 		cancel_delayed_work(&tb_dev->tb_work);
 		appletb_schedule_tb_update(tb_dev, 0);
@@ -602,6 +610,7 @@ static void appletb_update_touchbar(struct appletb_device *tb_dev, bool force)
 static void appletb_set_idle_timeout(struct appletb_device *tb_dev, int new)
 {
 	tb_dev->idle_timeout = new;
+
 	if (tb_dev->dim_to_is_calc && tb_dev->idle_timeout > 0)
 		tb_dev->dim_timeout = new - min(APPLETB_MAX_DIM_TIME, new / 3);
 	else if (tb_dev->dim_to_is_calc)
@@ -732,7 +741,6 @@ static int appletb_hid_event(struct hid_device *hdev, struct hid_field *field,
 	int slot;
 	int rc = 0;
 
-	/* Only interested in keyboard events */
 	if ((usage->hid & HID_USAGE_PAGE) != HID_UP_KEYBOARD ||
 	    usage->type != EV_KEY)
 		return 0;
@@ -757,20 +765,17 @@ static int appletb_hid_event(struct hid_device *hdev, struct hid_field *field,
 
 	new_code = appletb_fn_to_special(usage->code);
 
-	/* remember which (untranslated) touch bar keys are pressed */
 	if (value != 2)
 		tb_dev->last_tb_keys_pressed[slot] = value;
 
-	/* remember last time keyboard or touchpad was touched */
 	tb_dev->last_event_time = ktime_get();
 
-	/* only switch touch bar mode when no touch bar keys are pressed */
 	appletb_update_touchbar_no_lock(tb_dev, false);
 
 	/*
 	 * We want to suppress touch bar keys while the touch bar is off, but
 	 * we do want to wake up the screen if it's asleep, so generate a dummy
-	 * event.
+	 * event in that case.
 	 */
 	if (tb_dev->cur_tb_mode == APPLETB_CMD_MODE_OFF ||
 	    tb_dev->cur_tb_disp == APPLETB_CMD_DISP_OFF) {
@@ -825,14 +830,11 @@ static void appletb_inp_event(struct input_handle *handle, unsigned int type,
 		return;
 	}
 
-	/* remember last state of FN key */
 	if (type == EV_KEY && code == KEY_FN && value != 2)
 		tb_dev->last_fn_pressed = value;
 
-	/* remember last time keyboard or touchpad was touched */
 	tb_dev->last_event_time = ktime_get();
 
-	/* only switch touch bar mode when no touch bar keys are pressed */
 	appletb_update_touchbar_no_lock(tb_dev, false);
 
 	spin_unlock_irqrestore(&tb_dev->tb_lock, flags);
@@ -1305,7 +1307,7 @@ static int appletb_reset_resume(struct hid_device *hdev)
 		/*
 		 * Restore touch bar state. Note that autopm state is not
 		 * preserved, so need explicitly restore that here.
-	 	 */
+		 */
 		tb_dev->active = true;
 		tb_dev->restore_autopm = true;
 		tb_dev->last_event_time = ktime_get();
@@ -1325,12 +1327,10 @@ static struct appletb_device *appletb_alloc_device(void)
 {
 	struct appletb_device *tb_dev;
 
-	/* allocate */
 	tb_dev = kzalloc(sizeof(*tb_dev), GFP_KERNEL);
 	if (!tb_dev)
 		return NULL;
 
-	/* initialize structures */
 	spin_lock_init(&tb_dev->tb_lock);
 	INIT_DELAYED_WORK(&tb_dev->tb_work, appletb_set_tb_worker);
 
