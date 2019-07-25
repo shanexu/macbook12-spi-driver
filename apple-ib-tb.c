@@ -68,7 +68,8 @@
 #define APPLETB_FN_MODE_NORM	1
 #define APPLETB_FN_MODE_INV	2
 #define APPLETB_FN_MODE_SPCL	3
-#define APPLETB_FN_MODE_MAX	APPLETB_FN_MODE_SPCL
+#define APPLETB_FN_MODE_ESC	4
+#define APPLETB_FN_MODE_MAX	APPLETB_FN_MODE_ESC
 
 #define APPLETB_DEVID_KEYBOARD	1
 #define APPLETB_DEVID_TOUCHPAD	2
@@ -99,7 +100,8 @@ MODULE_PARM_DESC(fnmode, "Default Fn key mode:\n"
 			 "    0 - function-keys only\n"
 			 "    [1] - fn key switches from special to function-keys\n"
 			 "    2 - inverse of 1\n"
-			 "    3 - special keys only");
+			 "    3 - special keys only\n"
+			 "    4 - escape key only");
 
 static ssize_t idle_timeout_show(struct device *dev,
 				 struct device_attribute *attr, char *buf);
@@ -501,6 +503,9 @@ static unsigned char appletb_get_cur_tb_disp(struct appletb_device *tb_dev)
 static unsigned char appletb_get_fn_tb_mode(struct appletb_device *tb_dev)
 {
 	switch (tb_dev->fn_mode) {
+	case APPLETB_FN_MODE_ESC:
+		return APPLETB_CMD_MODE_ESC;
+
 	case APPLETB_FN_MODE_FKEYS:
 		return APPLETB_CMD_MODE_FN;
 
