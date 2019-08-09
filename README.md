@@ -1,12 +1,28 @@
 Work in progress driver for the touchbar and ambient-light-sensor on 2019 MacBook Pro's.
 
-DKMS module (Debian & co):
---------------------------
-As root, do the following:
+Building and Installing:
+------------------------
+```
+git clone --branch mbp15 https://github.com/roadrunner2/macbook12-spi-driver.git
+cd macbook12-spi-driver
+make
+sudo modprobe industrialio_triggered_buffer
+sudo insmod apple-ibridge.ko
+sudo insmod apple-ib-tb.ko
+sudo insmod apple-ib-als.ko
+```
+
+Alternatively, use dkms:
+
+DKMS module:
+------------
+As root, do the following (use `dnf` instead of `apt` if on Fedora or similar):
 ```
 apt install dkms
-git clone https://github.com/roadrunner2/macbook12-spi-driver.git /usr/src/applespi-0.1
+git clone --branch mbp15 https://github.com/roadrunner2/macbook12-spi-driver.git /usr/src/apple-ibridge-0.1
 dkms install -m apple-ibridge -v 0.1
+modprobe apple-ib-tb
+modprobe apple-ib-als
 ```
 
 Touchbar/ALS/iBridge:
