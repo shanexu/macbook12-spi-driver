@@ -1102,14 +1102,36 @@ static const struct input_device_id appletb_input_devices[] = {
 		.bustype = BUS_SPI,
 		.keybit = { [BIT_WORD(KEY_FN)] = BIT_MASK(KEY_FN) },
 		.driver_info = APPLETB_DEVID_KEYBOARD,
-	},			/* Builtin keyboard device */
+	},			/* Builtin SPI keyboard device */
 	{
 		.flags = INPUT_DEVICE_ID_MATCH_BUS |
 			INPUT_DEVICE_ID_MATCH_KEYBIT,
 		.bustype = BUS_SPI,
 		.keybit = { [BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH) },
 		.driver_info = APPLETB_DEVID_TOUCHPAD,
-	},			/* Builtin touchpad device */
+	},			/* Builtin SPI touchpad device */
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_BUS |
+			INPUT_DEVICE_ID_MATCH_VENDOR |
+			INPUT_DEVICE_ID_MATCH_PRODUCT |
+			INPUT_DEVICE_ID_MATCH_KEYBIT,
+		.bustype = BUS_USB,
+		.vendor = 0x05ac /* USB_VENDOR_ID_APPLE */,
+		.product = 0x027b,
+		.keybit = { [BIT_WORD(KEY_FN)] = BIT_MASK(KEY_FN) },
+		.driver_info = APPLETB_DEVID_KEYBOARD,
+	},			/* Builtin USB keyboard device */
+	{
+		.flags = INPUT_DEVICE_ID_MATCH_BUS |
+			INPUT_DEVICE_ID_MATCH_VENDOR |
+			INPUT_DEVICE_ID_MATCH_PRODUCT |
+			INPUT_DEVICE_ID_MATCH_KEYBIT,
+		.bustype = BUS_USB,
+		.vendor = 0x05ac /* USB_VENDOR_ID_APPLE */,
+		.product = 0x027b,
+		.keybit = { [BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH) },
+		.driver_info = APPLETB_DEVID_TOUCHPAD,
+	},			/* Builtin USB touchpad device */
 	{ },			/* Terminating zero entry */
 };
 
