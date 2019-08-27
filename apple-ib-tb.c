@@ -1099,27 +1099,46 @@ static const struct input_device_id appletb_input_devices[] = {
 	{
 		.flags = INPUT_DEVICE_ID_MATCH_BUS |
 			INPUT_DEVICE_ID_MATCH_VENDOR |
-			INPUT_DEVICE_ID_MATCH_PRODUCT |
 			INPUT_DEVICE_ID_MATCH_KEYBIT,
 		.bustype = BUS_USB,
 		.vendor = 0x05ac /* USB_VENDOR_ID_APPLE */,
-		.product = 0x027b,
 		.keybit = { [BIT_WORD(KEY_FN)] = BIT_MASK(KEY_FN) },
 		.driver_info = APPLETB_DEVID_KEYBOARD,
 	},			/* Builtin USB keyboard device */
 	{
 		.flags = INPUT_DEVICE_ID_MATCH_BUS |
 			INPUT_DEVICE_ID_MATCH_VENDOR |
-			INPUT_DEVICE_ID_MATCH_PRODUCT |
 			INPUT_DEVICE_ID_MATCH_KEYBIT,
 		.bustype = BUS_USB,
 		.vendor = 0x05ac /* USB_VENDOR_ID_APPLE */,
-		.product = 0x027b,
 		.keybit = { [BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH) },
 		.driver_info = APPLETB_DEVID_TOUCHPAD,
 	},			/* Builtin USB touchpad device */
 	{ },			/* Terminating zero entry */
 };
+
+static bool appletb_match_internal_device(struct input_handler *handler,
+					  struct input_dev *inp_dev)
+{
+	struct device *dev = &inp_dev->dev;
+
+	if (inp_dev->id.bustype == BUS_SPI)
+		return true;
+
+	/* in kernel: is_usb_device(dev) */
+	while (dev && (!dev->type || strcmp(dev->type->name, "usb_device")))
+		dev = dev->parent;
+
+	/*
+	 * Apple labels all their internal keyboards and trackpads as such,
+	 * instead of maintaining an ever expanding list of product-id's we
+	 * just look at the device's product name.
+	 */
+	if (dev)
+		return !strstr(to_usb_device(dev)->product, "Internal Keyboard");
+
+	return false;
+}
 
 static int appletb_probe(struct hid_device *hdev,
 			 const struct hid_device_id *id)
@@ -1183,6 +1202,7 @@ static int appletb_probe(struct hid_device *hdev,
 		tb_dev->inp_handler.disconnect = appletb_inp_disconnect;
 		tb_dev->inp_handler.name = "appletb";
 		tb_dev->inp_handler.id_table = appletb_input_devices;
+		tb_dev->inp_handler.match = appletb_match_internal_device;
 		tb_dev->inp_handler.private = tb_dev;
 
 		rc = input_register_handler(&tb_dev->inp_handler);
