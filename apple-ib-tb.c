@@ -861,29 +861,15 @@ static void appletb_inp_event(struct input_handle *handle, unsigned int type,
 }
 
 /* Find and save the usb-device associated with the touch bar input device */
-static struct usb_interface *appletb_get_usb_iface(struct hid_device *hdev,
-						   const struct hid_device_id *id)
+static struct usb_interface *appletb_get_usb_iface(struct hid_device *hdev)
 {
 	struct device *dev = &hdev->dev;
 
-	/* iBridge virt-hid */
-	if (!dev->bus || strcmp(dev->bus->name, "hid") != 0)
-		return NULL;
-
-	/* real hid */
-	if (id->vendor == USB_VENDOR_ID_LINUX_FOUNDATION &&
-	    id->product == USB_DEVICE_ID_IBRIDGE_TB) {
+	/* in kernel: is_usb_interface(dev) */
+	while (dev && (!dev->type || strcmp(dev->type->name, "usb_interface")))
 		dev = dev->parent;
-		if (!dev || !dev->bus || strcmp(dev->bus->name, "hid") != 0)
-			return NULL;
-	}
 
-	/* usb dev */
-	dev = dev->parent;
-	if (!dev || !dev->bus || strcmp(dev->bus->name, "usb") != 0)
-		return NULL;
-
-	return to_usb_interface(dev);
+	return dev ? to_usb_interface(dev) : NULL;
 }
 
 static int appletb_inp_connect(struct input_handler *handler,
@@ -1028,7 +1014,7 @@ static int appletb_extract_report_and_iface_info(struct appletb_device *tb_dev,
 		}
 	}
 
-	usb_iface = appletb_get_usb_iface(hdev, id);
+	usb_iface = appletb_get_usb_iface(hdev);
 	if (!usb_iface) {
 		dev_err(tb_dev->log_dev,
 			"Failed to find usb interface for hid device %s\n",
