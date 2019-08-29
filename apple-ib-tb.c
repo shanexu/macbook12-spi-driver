@@ -1126,7 +1126,8 @@ static bool appletb_match_internal_device(struct input_handler *handler,
 		return true;
 
 	/* in kernel: is_usb_device(dev) */
-	while (dev && (!dev->type || strcmp(dev->type->name, "usb_device")))
+	while (dev && (!dev->type || !dev->type->name ||
+		       strcmp(dev->type->name, "usb_device")))
 		dev = dev->parent;
 
 	/*
