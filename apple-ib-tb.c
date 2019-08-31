@@ -1137,7 +1137,7 @@ static bool appletb_match_internal_device(struct input_handler *handler,
 	 * just look at the device's product name.
 	 */
 	if (dev)
-		return !strstr(to_usb_device(dev)->product, "Internal Keyboard");
+		return !!strstr(to_usb_device(dev)->product, "Internal Keyboard");
 
 	return false;
 }
