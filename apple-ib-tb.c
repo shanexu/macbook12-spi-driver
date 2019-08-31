@@ -865,8 +865,9 @@ static struct usb_interface *appletb_get_usb_iface(struct hid_device *hdev)
 {
 	struct device *dev = &hdev->dev;
 
-	/* in kernel: is_usb_interface(dev) */
-	while (dev && (!dev->type || strcmp(dev->type->name, "usb_interface")))
+	/* in kernel: dev && !is_usb_interface(dev) */
+	while (dev && !(dev->type && dev->type->name &&
+			!strcmp(dev->type->name, "usb_interface")))
 		dev = dev->parent;
 
 	return dev ? to_usb_interface(dev) : NULL;
@@ -1125,9 +1126,9 @@ static bool appletb_match_internal_device(struct input_handler *handler,
 	if (inp_dev->id.bustype == BUS_SPI)
 		return true;
 
-	/* in kernel: is_usb_device(dev) */
-	while (dev && (!dev->type || !dev->type->name ||
-		       strcmp(dev->type->name, "usb_device")))
+	/* in kernel: dev && !is_usb_device(dev) */
+	while (dev && !(dev->type && dev->type->name &&
+			!strcmp(dev->type->name, "usb_device")))
 		dev = dev->parent;
 
 	/*
